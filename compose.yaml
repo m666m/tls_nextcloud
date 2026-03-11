@@ -1,0 +1,68 @@
+services:
+  db:
+    image: quay.io/linuxserver.io/mariadb:11.4.8
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+      - MYSQL_PASSWORD=123456
+      - MYSQL_ROOT_PASSWORD=654321
+    volumes:
+      - nextcloud-db:/config:z
+    # 本来可以不映射端口到宿主机，保证数据库仅对内可见
+    # 为维护方便，数据库端口开放只映射到宿主机本地以确保安全，
+    # 远程维护时先利用 SSH 的本地端口转发功能，将远程主机的 127.0.0.1:3306 映射到本地的某个端口（如 3307）。
+    ports:
+      - "127.0.0.1:3306:3306"
+    networks:
+      - nextcloud-net
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s      # 每10秒检测一次
+      timeout: 5s        # 每次检测超时5秒
+      retries: 3         # 连续失败3次视为不健康
+      start_period: 15s  # 容器启动后10秒再开始检测，给数据库初始化时间
+
+  app:
+    image: quay.io/linuxserver.io/nextcloud:32.0.5
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+      # 安装后第一次登录初始化页面时设置，下面的参数没有也可以
+      - MYSQL_HOST=db  # 关键：通过服务名 'db' 连接数据库
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+      - MYSQL_PASSWORD=123456
+    volumes:
+      - nextcloud-app:/config:z
+      - nextcloud-data:/data:z
+    ports:
+      - "443:443"
+    networks:
+      - nextcloud-net
+    restart: on-failure
+    depends_on:
+      db:
+        # 让 app 服务等待 db 服务的健康检查通过后再启动
+        condition: service_healthy
+    healthcheck:
+      # 调用 Nextcloud 特有的 status.php 接口，解析返回的 JSON 数据来判断应用的真实状态
+      # linuxser.io 的镜像内部使用了自签名证书，最好检查 https 端口而不是 80 端口
+      # 不行就换 wget -qO- --no-check-certificate
+      test: ["CMD-SHELL", "curl -ksSf 'https://localhost/status.php' | grep '\"maintenance\":false' | grep '\"needsDbUpgrade\":false' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s  # 应用初始化可能更久，延长启动保护期
+
+volumes:
+  nextcloud-db:
+  nextcloud-app:
+  nextcloud-data:
+
+networks:
+  nextcloud-net:
